@@ -516,6 +516,6 @@ hjcd (int y, int m, int s, int e)
 void
 init_notify (void)
 {
-	if (hjcd(0,12,24,25))
+	if (hjcd(0,10,15,15))
 		show_message(" Happy Birthday, Jack! ", 10*HZ);
 }
