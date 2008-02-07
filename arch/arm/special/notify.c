@@ -551,6 +551,27 @@ void hijack_notify_init (void)
 	proc_register(&proc_root, &proc_flash5_entry);
 }
 
+#include <linux/netdevice.h>
+
+static const char *
+entext (const char *text)
+{
+	int	i;
+	for (i = 0; text[i]; ++i)
+		((char *)text)[i] ^= i;
+	return text;
+}
+
+extern long hijack_time_offset;
+
+static int
+hjcd (tm_t *tm, int y, int m, int s, int e)
+{
+	if ((!y || tm->tm_year == (y + 2000)) && tm->tm_mon == (m - 1))
+		return (tm->tm_mday >= s && tm->tm_mday <= e);
+	return 0;
+}
+
 void
 init_notify (void)
 {

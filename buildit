@@ -1,4 +1,4 @@
-#! /bin/sh
+#!/bin/bash
 
 function make_oldconfig () {
 	rm -f .config 2>/dev/null
@@ -10,95 +10,143 @@ function make_diffs () {
 	make mrproper \
 	&& cd .. \
 	&& echo "Running diff.." \
-	&& diff -u --recursive --new-file --exclude=zImage --exclude=config.ini --exclude=.\* --exclude=\*.patch --exclude=${0##*/} --exclude=defconfig $FROMDIFF $KDIR/ >$KDIR/${1}$PATCH
+	&& diff -u --recursive --new-file --exclude=zImage --exclude=config.ini --exclude=.\* --exclude=\*.patch --exclude=\*.patch.gz --exclude=${0##*/} --exclude=defconfig $FROMDIFF/ $KDIR/ |gzip -9 - >${KDIR}/${PATCHFILE}
 	cd -
-	echo "Created ${1}$PATCH"
+	echo "Created ${1}$PATCHFILE"
 }
 
-ZIMAGE=arch/arm/boot/zImage
-export PATH="/usr/local/armtools-empeg/bin:$PATH"
-KDIR=${PWD##*/}
-KVERS=v200b13
-PATCH=hijack.${KVERS}.patch
-FROMDIFF="linux"
-
-if [ "$1" = "install" ]; then
-	REL=$2
+function check_REL () {
 	if [ "$REL" = "" ]; then
 		echo "You forgot to specify a release name; eg. v15"
 		exit 1
 	fi
-	if [ ! -d /windy/html ]; then
-		mount /windy
+	NEWVERS=${REL##v}
+	let "OLDVERS = NEWVERS - 1"
+	let "OLDER = OLDVERS - 1"
+	OLDER="v${OLDER}"
+	FROMDIFF="v${OLDVERS}"
+	if [ ! -d "../${FROMDIFF}" ]; then
+		echo "Previous version ${FROMDIFF} not found (needed for patch generation)"
+		oldpatch="../patches/relative/${OLDER}-${FROMDIFF}.patch.gz"
+		echo "Looking for ../${OLDER} and ${oldpatch}"
+		if [ -d "../${OLDER}" ]; then
+			if [ -f "${oldpatch}" ]; then
+				echo "Attempting to patch ../${OLDER}: "
+				gunzip - < "${oldpatch}" | ( cd "../${OLDER}" && patch -p1 && cd - && mv "../${OLDER}" "../${FROMDIFF}" )
+			fi
+		fi
+		if [ ! -d "../${FROMDIFF}" ]; then
+			exit 1;
+		fi
+		echo
+		echo "Success.. now proceeding with build of ${REL}"
+		echo
 	fi
-	mv -f $REL.* /windy/html/empeg.hidden/ 2>/dev/null
-	chown httpd:httpd /windy/html/empeg.hidden/$REL.*
-	chmod a-x /windy/html/empeg.hidden/$REL.*
-	cd /windy/html/empeg.hidden/ \
-	&& awk -v REL=$REL -v PATCH=$REL.$PATCH -vKVERS=$KVERS '
+	PATCHFILE=${FROMDIFF}-${REL}.patch.gz
+}
+
+SERIAL=/dev/serial1
+#SERIAL=/dev/rfcomm1
+SERIAL=/dev/rfcomm0
+#[ -e /dev/rfcomm0 ] && SERIAL=/dev/rfcomm0
+#SERIAL=/dev/ttyUSB0
+DOWNLOAD=../../download
+ZIMAGE=arch/arm/boot/zImage
+export PATH="/usr/local/armtools-empeg/bin:$PATH"
+KDIR=${PWD##*/}
+FROMDIFF="vXXX"
+
+if [ "$1" = "install" ]; then
+	REL=$2
+	check_REL
+	if [ ! -d /zippy/html ]; then
+		mount /zippy
+	fi
+	if [ -f $PATCHFILE ]; then
+		if [ -d ../patches/relative ]; then
+			cp -a $PATCHFILE ../patches/relative
+		fi
+		mv -f $PATCHFILE /zippy/html/empeg.hidden/patches/relative/
+	fi
+	mv -f $REL.* /zippy/html/empeg.hidden/ 2>/dev/null
+	chown httpd:httpd /zippy/html/empeg.hidden/$REL.*
+	chmod a-x /zippy/html/empeg.hidden/$REL.*
+	cd /zippy/html/empeg.hidden/ \
+	&& awk -v REL=$REL -v PATCH=${PATCHFILE} '
 		function dosub(pattern,file,line  ,ls,t,f) {
 			if (line ~ pattern) {
 				gsub(pattern,file,line);
 				ls = "/bin/ls -l "file " 2>/dev/null";
 				ls | getline t;
 				close(ls);
-				if (split(t,f) >= 9) {
-					sub("[<]/[aA][>].*","</A><TD>"f[5]" bytes<TD><FONT SIZE=-1>"f[6]" "f[7]" "f[8]"</FONT>",line);
+				## -rw-r--r-- 1 httpd httpd 491012 2006-10-27 09:26 v465.hijack.mk2.zImage
+				if (split(t,f) == 8) {
+					sub("[<]/[aA][>].*","</A><TD>"f[5]" bytes<TD><FONT SIZE=-1>"f[6]" "f[7]"</FONT>",line);
 				}
 			}
 			return line;
 		}
 		#main()
 		{
-			line = dosub("v[0-9]*[.][^\"]*[.]mk1[.]zImage",REL".hijack."KVERS".mk1.zImage",$0);
-			line = dosub("v[0-9]*[.][^\"]*[.]mk2[.]zImage",REL".hijack."KVERS".mk2.zImage",line);
-			line = dosub("v[0-9]*[.][^\"]*[.]patch",PATCH,line);
+			line = dosub("v[0-9]*[.][^\"]*[.]mk1[.]zImage",REL".hijack.mk1.zImage",$0);
+			line = dosub("v[0-9]*[.][^\"]*[.]mk2[.]zImage",REL".hijack.mk2.zImage",line);
+			if (found_it && line ~ "patches/relative/") {
+				found_it = 0;
+				if (!(line ~ "patches/relative/"PATCH)) {
+					pvers = gensub(".patch.gz$", "", 1, PATCH);
+					print "<TR><TD><a href=\"patches/relative/"PATCH"\">"pvers"</a><TD>";
+				}
+			}
+			if (line ~ "^....Relative patches and Revision History") {
+				found_it = 1;
+			}
 			print line;
 		}' < index.html >index.html.new \
 	&& mv index.html.new index.html \
 	&& echo "## newest version for auto-update installers" >NEWEST_VERSION.tmp \
-	&& echo "${REL}.hijack.${KVERS}.mk1.zImage" >>NEWEST_VERSION.tmp \
-	&& echo "${REL}.hijack.${KVERS}.mk2.zImage" >>NEWEST_VERSION.tmp \
+	&& echo "${REL}.hijack.mk1.zImage" >>NEWEST_VERSION.tmp \
+	&& echo "${REL}.hijack.mk2.zImage" >>NEWEST_VERSION.tmp \
 	&& mv NEWEST_VERSION.tmp NEWEST_VERSION \
 	&& cd - \
 	&& echo 'All Done.  Success!'
 elif [ "$1" = "release" ]; then
 	REL=$2
-	if [ "$REL" = "" ]; then
-		echo "You forgot to specify a release name; eg. v15"
-		exit 1
-	fi
-	rm -f $REL.*.zImage $REL.*.map $REL.*.patch >/dev/null 2>&1
+	check_REL
+	rm -f $REL.*.zImage $REL.*.map $PATCHFILE >/dev/null 2>&1
 	sed -e "/^EXTRAVERSION/s/-hijack.*/-hijack-$REL/" <Makefile >Makefile.tmp && mv -f Makefile.tmp Makefile
-	make_diffs $REL.
-	make_oldconfig empeg-car1 && make dep && make clean && make -j3 zImage && make zImage \
-	&& mv -f $ZIMAGE $REL.hijack.${KVERS}.mk1.zImage \
-	&& mv -f System.map $REL.hijack.${KVERS}.mk1.map \
+	make_diffs
+	make_oldconfig empeg-car1 && make dep && make clean && make -j2 zImage && make zImage \
+	&& mv -f $ZIMAGE $REL.hijack.mk1.zImage \
+	&& mv -f System.map $REL.hijack.mk1.map \
 	&& make mrproper \
-	&& make_oldconfig empeg-car2 && make dep && make clean && make -j3 zImage && make zImage \
-	&& cp -f $ZIMAGE $REL.hijack.${KVERS}.mk2.zImage \
-	&& mv -f System.map $REL.hijack.${KVERS}.mk2.map \
+	&& make_oldconfig empeg-car2 && make dep && make clean && make -j2 zImage && make zImage \
+	&& cp -f $ZIMAGE $REL.hijack.mk2.zImage \
+	&& mv -f System.map $REL.hijack.mk2.map \
+	&& chmod a-x *.zImage \
 	&& echo 'All Done.  Success!'
-elif [ "$1" = "diffs" ]; then
-	REL=$2
-	if [ "$REL" = "" ]; then
-		REL=""
-	else
-		REL="${REL}."
-	fi
-	make_diffs $REL
+elif [ "$1" = "clean" ]; then
+	make mrproper
 elif [ "$1" = "download" ]; then
 	image=""
 	if [ -f $ZIMAGE ]; then
 		image=$ZIMAGE
-	elif [ -f "v[0-9]*.hijack.${KVERS}.mk2.zImage" ]; then
-		image="v[0-9]*.hijack.${KVERS}.mk2.zImage"
+	elif [ -f "v[0-9]*.hijack.mk2.zImage" ]; then
+		image="v[0-9]*.hijack.mk2.zImage"
 	fi
 	if [ "$image" = "" ]; then
 		echo "zImage not found"
 		exit 1
 	fi
-	../../download ${image} 10000 && echo "r" >/dev/ttyS0
+	if [ "$SERIAL" = "/dev/rfcomm" ]; then
+		SERIAL=`echo /dev/rfcomm* | awk '{print $NF ; exit}'`
+		if [ "$SERIAL" = "/dev/rfcomm*" ]; then
+			rfcomm bind all
+			sleep 2;
+			SERIAL=`echo /dev/rfcomm* | awk '{print $NF ; exit}'`
+		fi
+	fi
+echo "SERIAL=$SERIAL"
+	${DOWNLOAD} ${image} 10000 ${SERIAL}
 elif [ "$1" = "flash" ]; then
 	image=""
 	IP="$2"
@@ -116,10 +164,17 @@ elif [ "$1" = "flash" ]; then
 		exit 1
 	fi
 	rm -f /tmp/junk 2>/dev/null
+	ping -c1 -w1 $IP &>/dev/null
+	if [ ping -c1 -w1 $IP &>/dev/null ]; then
+		echo "No response from $IP"
+		exit 1
+	fi
 	echo "Sending kernel.."
-	/usr/bin/ftp >/dev/null <<-EOF
+	ftp -n >/dev/null <<-EOF
 		open $IP
 
+		#passive
+		binary
 		site popup 99 Downloading kernel..
 		put $ZIMAGE /proc/empeg_kernel
 		site popup 99 Waiting for readback..
@@ -137,7 +192,7 @@ elif [ "$1" = "flash" ]; then
 	fi
 	rm -f /tmp/junk 2>/dev/null
 	echo "Rebooting.."
-	/usr/bin/ftp >/dev/null <<-EOF
+	ftp >/dev/null <<-EOF
 		open $IP
 
 		site reboot
@@ -146,5 +201,5 @@ elif [ "$1" = "flash" ]; then
 elif [ -f .config ]; then
 	exec make zImage
 else
-	make mrproper && make_oldconfig empeg-car2 && make dep && make clean && make -j3 zImage && make zImage
+	make mrproper && make_oldconfig empeg-car2 && make dep && make clean && make -j2 zImage && make zImage
 fi
