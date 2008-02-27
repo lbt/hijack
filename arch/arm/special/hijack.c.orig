@@ -27,8 +27,6 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
-extern unsigned char empeg_ani[];			            // arch/arm/special/empeg_display.c
-extern unsigned char nohd_img[];		               	// arch/arm/special/empeg_display.c
 extern int hijack_exec(const char *, const char *);			// arch/arm/special/kexec.c
 extern void *hijack_get_state_read_buffer (void);			// arch/arm/special/empeg_state.c
 extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
@@ -2816,140 +2814,6 @@ game_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-// LittleBlueThing's Boot Graphic menu entry
-typedef struct bootg_s {
-	const char		*label;
-	unsigned char   type;
-	unsigned char   *data;
-} bootg_t;
-
-static bootg_t bootg_options[] = {
-	{"Boot Animation",'A', NULL},
-	{"Empeg Animation",'A',empeg_ani},
-	{"Car Logo",'L',(unsigned char*)(EMPEG_FLASHBASE+0xa000+4+EMPEG_SCREEN_SIZE)},
-	{"Home Logo",'L',(unsigned char*)(EMPEG_FLASHBASE+0xa000+4)},
-	{"BSOD",'L',nohd_img},
-	{0,0,0 } };  // 0 termination required
-
-int bootg_sel = 0;
-int bootg_dodisplay = 0;  // 0:nothing 1:logo/frame#1 2:animation
-int bootg_domenu = 0;     // menu selection changed: redisplay
-int	bootg_frame = 0; // frame count in animation
-unsigned int  bootg_framet = 0;  // time frame displayed
-unsigned int* bootg_anim; // start of animation in memory
-
-static void
-bootg_move (int direction)
-{
-	bootg_sel += direction;
-	if (bootg_sel < 0)
-		bootg_sel = 0;
-	else if (bootg_options[bootg_sel].type == 0)
-		bootg_sel   -= 1;
-}
-
-static int
-bootg_display (int firsttime)
-{
-	unsigned int rowcol;
-	hijack_buttondata_t data;
-	unsigned char *d,*s;
-	int a;
-	
-	if (firsttime || bootg_domenu) {
-		// Show the menu text
-		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "View boot graphics.\nKnob selects\nRight: view, Left: return here", PROMPTCOLOR);
-		rowcol = draw_string(ROWCOL(3,0), "[", PROMPTCOLOR);
-		rowcol = draw_string_spaced(rowcol, bootg_options[bootg_sel].label, ENTRYCOLOR);
-		(void)  draw_string(rowcol, "]", PROMPTCOLOR);
-
-		// Do our own button handling
-		hijack_buttonlist = intercept_all_buttons;
-		hijack_initq(&hijack_userq, 'U');
-		bootg_domenu= 0;
-		bootg_dodisplay=0; // stop any ongoing animation
-		return NEED_REFRESH;
-	}	
-	// Do our own button handling
-	if (hijack_button_deq(&hijack_userq, &data, 0)) {
-		switch (data.button) {
-		case IR_TOP_BUTTON_PRESSED:
-			ir_selected= 1;
-			break;
-		case IR_LEFT_BUTTON_PRESSED:
-			bootg_domenu= 1;
-			break;
-		case IR_RIGHT_BUTTON_PRESSED:
-			bootg_dodisplay = 1;
-			break;
-		case IR_KNOB_RIGHT:
-			bootg_move(1);
-			bootg_domenu= 1;
-			break;
-		case IR_KNOB_LEFT:
-			bootg_move(-1);
-			bootg_domenu= 1;
-			break;
-		case IR_KNOB_PRESSED:
-			hijack_buttonlist = NULL;
-			ir_selected = 1; // return to main menu
-			break;
-		}
-	}
-
-	if (bootg_dodisplay == 1 ) {
-		// Logo or animation preparation
-		switch (bootg_options[bootg_sel].type) {
-		case 'L':
-			// logo
-			memcpy(hijack_displaybuf, bootg_options[bootg_sel].data, EMPEG_SCREEN_SIZE);
-			bootg_dodisplay=0;
-			return NEED_REFRESH;
-		case 'A':
-			// animation
-			bootg_frame = 0;
-			if (bootg_options[bootg_sel].data)
-				bootg_anim = (unsigned int*)bootg_options[bootg_sel].data ;
-			else
-				bootg_anim = hijack_game_animptr; // aha - reuse :)
-			if (bootg_anim)
-				bootg_dodisplay=2; // 2 means ongoing display
-			else
-			{
-				bootg_dodisplay=0; // No animation (maybe display message)
-				clear_hijack_displaybuf(COLOR0);
-				(void)draw_string(ROWCOL(0,0), "No boot animation found", PROMPTCOLOR);
-			}
-			return NEED_REFRESH;
-		}
-	}
-	if (bootg_dodisplay == 2 ) {
-		// ongoing animation
-		if 	(jiffies_since(bootg_framet) < (HZ/ANIMATION_FPS))
-			return NO_REFRESH;
-		
-		if (!bootg_anim[bootg_frame]) {
-			bootg_frame = 0;
-			bootg_dodisplay = 0; //stop animation
-			return NO_REFRESH;  // Leave last frame on screen... (blanker still works)
-		}
-
-		// Steal^H^H^H^H^H Reuse ml's anim code
-		s = (unsigned char *)bootg_anim + bootg_anim[bootg_frame];
-		d = (unsigned char *)hijack_displaybuf;
-		for(a=0;a<2048;a+=2) {
-			*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
-			*d++=((*s&0x0c)<<2)|((*s&0x03));
-			s++;
-		}
-		bootg_frame += 1;
-		bootg_framet = JIFFIES();
-		return NEED_REFRESH;
-	}
-	return NO_REFRESH;
-}
-
 /* Time Alignment Setup Code - Christian Hack 2002 - christianh@pdd.edmi.com.au */
 /* Allows user adjustment of channel delay for time alignment. Time alignment   */
 /* is actually done in empeg_audio3.c. thru global var hijack_delaytime         */
@@ -3353,7 +3217,6 @@ showbutton_display (int firsttime)
 
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
-	{"Boot Graphics",		    bootg_display,	bootg_move,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
