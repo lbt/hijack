@@ -35,6 +35,9 @@ extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
+extern void display_animation_frame(unsigned char *buf, unsigned char *frame);
+                                                        // arch/arm/special/empeg_display.c
+
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern void init_notify (void);						// arch/arm/special/notify.c
 extern int sys_sync(void);						// fs/buffer.c
@@ -2644,9 +2647,8 @@ static int
 game_finale (void)
 {
 	static int framenr, frameadj;
-	unsigned char *d,*s;
 	unsigned long rowcol;
-	int a, score;
+	int score;
 
 	if (game_bricks) {  // Lost game?
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
@@ -2674,13 +2676,8 @@ game_finale (void)
 		frameadj = -1;  // play it again, backwards
 		framenr += frameadj;
 	}
-	s = (unsigned char *)hijack_game_animptr + hijack_game_animptr[framenr];
-	d = (unsigned char *)hijack_displaybuf;
-	for(a=0;a<2048;a+=2) {
-		*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
-		*d++=((*s&0x0c)<<2)|((*s&0x03));
-		s++;
-	}
+	display_animation_frame((unsigned char *)hijack_displaybuf,
+							(unsigned char *)(hijack_game_animptr + hijack_game_animptr[framenr]));
 	framenr += frameadj;
 	game_animtime = JIFFIES();
 	return NEED_REFRESH;
@@ -2853,8 +2850,6 @@ bootg_display (int firsttime)
 {
 	unsigned int rowcol;
 	hijack_buttondata_t data;
-	unsigned char *d,*s;
-	int a;
 	
 	if (firsttime || bootg_domenu) {
 		// Show the menu text
@@ -2935,14 +2930,9 @@ bootg_display (int firsttime)
 			return NO_REFRESH;  // Leave last frame on screen... (blanker still works)
 		}
 
-		// Steal^H^H^H^H^H Reuse ml's anim code
-		s = (unsigned char *)bootg_anim + bootg_anim[bootg_frame];
-		d = (unsigned char *)hijack_displaybuf;
-		for(a=0;a<2048;a+=2) {
-			*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
-			*d++=((*s&0x0c)<<2)|((*s&0x03));
-			s++;
-		}
+		// use consolidated code
+		display_animation_frame((unsigned char *)hijack_displaybuf,
+								(unsigned char *)bootg_anim + bootg_anim[bootg_frame]);
 		bootg_frame += 1;
 		bootg_framet = JIFFIES();
 		return NEED_REFRESH;
