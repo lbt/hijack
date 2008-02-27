@@ -2870,7 +2870,7 @@ bootg_display (int firsttime)
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		switch (data.button) {
 		case IR_TOP_BUTTON_PRESSED:
-			ir_selected= 1;
+			hijack_deactivate(HIJACK_IDLE_PENDING);
 			break;
 		case IR_LEFT_BUTTON_PRESSED:
 			bootg_domenu= 1;
