@@ -1,7 +1,9 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v485"
+#define HIJACK_VERSION	"v488"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
+
+#undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
 
 // mainline code is in hijack_handle_display() way down in this file
 
@@ -54,7 +56,9 @@ extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/not
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
+extern int empeg_readtherm_status(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
+extern int empeg_fixtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
        int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg); //arch/arm/special/empeg_display.c
        int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);
 extern int hijack_current_mixer_input;
@@ -578,6 +582,10 @@ static	int hijack_standby_minutes;		// number of minutes after screen blanks bef
 static	int hijack_keypress_flash;		// flash display when buttons are pressed
 	unsigned int hijack_visuals_gain;	// gain factor for cs4321a sampling (FM & AUX)
 
+void show_message (const char *message, unsigned long time);
+static unsigned int hijack_menuexec_no;
+static const char *no_yes[2] = {"No ", "Yes"};
+static char *hijack_menuexec_command;
 
 // Bass Treble Adjustment stuff follows  --genixia
 
@@ -1558,25 +1566,40 @@ kfont_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static unsigned long inittherm_lasttime = 0;
 static unsigned long hijack_last_readtherm = 0;
 static int           hijack_last_temperature = 0;
 
 static void
-init_temperature (int firsttime)
+init_temperature (int force)
 {
+	static int done = 0;
 	unsigned long flags;
 
-	// restart the thermometer once every five minutes or so
 	save_flags_clif(flags);
-	if (firsttime || jiffies_since(inittherm_lasttime) >= (HZ*5*60)) {
-		(void)empeg_inittherm(&OSMR0,&GPLR);
-		hijack_last_readtherm = inittherm_lasttime = jiffies;
-		restore_flags(flags);
-		hijack_last_readtherm = inittherm_lasttime = jiffies;
-	} else {
-		restore_flags(flags);
+	if (!done || force) {
+		int status, was_dead = 0;
+		done = 1;
+		status = empeg_readtherm_status(&OSMR0,&GPLR);
+		if ((status & 0x45) != 0x40) {
+			was_dead = 1;
+			if (status != -1) {
+				empeg_fixtherm(&OSMR0,&GPLR);
+				status = empeg_readtherm_status(&OSMR0,&GPLR);
+			}
+		}
+		restore_flags(flags);	// give other interrupts a chance
+		if (was_dead) {
+			const char *msg = "Dead temp.sensor";
+			if ((status & 0x45) == 0x40) {
+				msg = "Fixed temp.sensor";
+				show_message(msg, 5*HZ);
+			}
+			printk("%s, status=0x%02x\n", msg, status);
+		}
+		save_flags_clif(flags);
+		empeg_inittherm(&OSMR0,&GPLR);
 	}
+	restore_flags(flags);
 }
 
 int
@@ -1602,11 +1625,12 @@ hijack_read_temperature (void)
 	// But in practice, the danged thing stops updating sometimes
 	// so we may still need the odd call to empeg_inittherm()
 	// just to ensure it is running.  -ml
+	// Update: perhaps this was due to corrupted config register,
+	// which we now try to deal with in init_temperature.
 
-	save_flags_clif(flags);
 	init_temperature(0);
-	if (jiffies_since(hijack_last_readtherm) < (HZ*5))
-	{
+	save_flags_clif(flags);
+	if (jiffies_since(hijack_last_readtherm) < (HZ*5)) {
 		restore_flags(flags);
 		return hijack_last_temperature;
 	}
@@ -1988,11 +2012,6 @@ fsck_display (int firsttime)
 	(void)   draw_string_spaced(rowcol, disabled_enabled[!hijack_fsck_disabled], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
-
-void show_message (const char *message, unsigned long time);
-static unsigned int hijack_menuexec_no;
-static const char *no_yes[2] = {"No ", "Yes"};
-static char *hijack_menuexec_command;
 
 static int
 menuexec_display2 (int firsttime)
@@ -3194,6 +3213,58 @@ hightemp_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+#ifdef EMPEG_FIXTEMP
+static void
+fixtemp_pulse16 (void)
+{
+	unsigned long flags;
+	int i;
+
+	GPSR = EMPEG_DS1821;
+	udelay(20);
+	save_flags_clif(flags);
+	for (i = 0; i < 16; ++i) {
+		udelay(1);
+		GPCR = EMPEG_DS1821;
+		udelay(1);
+		GPSR = EMPEG_DS1821;
+	}
+	restore_flags(flags);
+}
+
+static void
+fixtemp_move (int direction)
+{
+}
+
+static int
+fixtemp_display (int firsttime)
+{
+	if (firsttime) {
+		/*
+		 * On entry, we assume user has pin-8 pulled to GND.
+		 * So now pulse DQ low 16 times:
+		 */
+		fixtemp_pulse16();
+		/*
+		 * Now prompt user to pull pin-8 high again:
+		 */
+		clear_hijack_displaybuf(COLOR0);
+		(void) draw_string(ROWCOL(1,0), "Apply +5V to pin-8,", PROMPTCOLOR);
+		(void) draw_string(ROWCOL(2,0), "and turn the knob.", PROMPTCOLOR);
+		hijack_last_moved = 0;
+		return NEED_REFRESH;
+	} else if (hijack_last_moved) {
+		/*
+		 * Now rewrite the config register in the internal eeprom:
+		 */
+		init_temperature(1);
+		activate_dispfunc(hightemp_display, hightemp_move, 0);
+	}
+	return NO_REFRESH;
+}
+#endif /* EMPEG_FIXTEMP */
+
 static void
 do_reboot (struct display_dev *dev)
 {
@@ -3350,6 +3421,9 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ timeraction_menu_label,	timeraction_display,	timeraction_move,	0},
 	{ timer_menu_label,		timer_display,		timer_move,		0},
 	{ fsck_menu_label,		fsck_display,		fsck_move,		0},
+#ifdef EMPEG_FIXTEMP
+	{ "Fix Temperature Sensor",	fixtemp_display,	fixtemp_move,		0},
+#endif
 	{"Font Display",		kfont_display,		NULL,			0},
 	{ forcepower_menu_label,	forcepower_display,	forcepower_move,	0},
 	{ onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
@@ -4369,7 +4443,7 @@ input_append_code2 (unsigned int rawbutton)
 		while (NULL != (t = ir_next_match(t, button))) {
 			unsigned short t_flags = t->flags;
 			if (t_flags & IR_FLAGS_POPUP)
-				break;	// no translations here for PopUp's
+				break;	// no translations here for PopUp's //FIXME: continue instead of break?
 			if (hijack_ir_debug)
 				printk("%lu: IA2: tflags=%02x, flags=%02x, match=%d\n", jiffies, t_flags, flags, (t_flags & flags) == t_flags);
 			if ((t_flags & flags) == flags) {
@@ -4378,7 +4452,7 @@ input_append_code2 (unsigned int rawbutton)
 						// We were timing for a possible longpress,
 						//  but now know that it wasn't held down long enough.
 						// Instead, we just let go of a shortpress for which
-						//   the original "press" code has been sent yet
+						//   the original "press" code has not been sent yet
 						// So we must now look for a shortpress translation
 						delayed_send = 1;
 						continue; // look for shortpress translation instead
@@ -4570,7 +4644,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			if (dev->power) {
 				if (carvisuals_enabled && empeg_on_dc_power)
 					hijack_enq_button_pair(IR_BOTTOM_BUTTON_PRESSED|BUTTON_FLAGS_LONGPRESS);
+#ifndef EMPEG_FIXTEMP
 				init_temperature(1);
+#endif
 				// Send initial button sequences, if any
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
