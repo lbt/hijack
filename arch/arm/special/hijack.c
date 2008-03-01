@@ -19,6 +19,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include <linux/kernel_stat.h>
 #include <linux/unistd.h>
 #include <linux/dirent.h>
+#include <linux/random.h>
 
 #include <linux/empeg.h>
 #include <asm/uaccess.h>
@@ -793,7 +794,18 @@ static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
-const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width font
+// Font characters are specified in an 6x8 (wxh) matrix
+// each byte represents a column msb at the bottom
+// no antialiasing <sigh>
+
+#define FIRST_CHAR (unsigned char)0x1e  // was ' '. Reduce if adding chars to start of list
+#define LAST_CHAR (unsigned char)0x7f  // was '~'. Increase if adding chars to end of list
+
+#define HENRY_LEFTC  0x1e
+#define HENRY_RIGHTC 0x1f
+const unsigned char kfont [1 + LAST_CHAR - FIRST_CHAR][KFONT_WIDTH] = {  // variable width font
+	{0x20,0x38,0x26,0x21,0x45,0x81},  // henry-left
+	{0x45,0x21,0x26,0x38,0x20,0x20},  // henry-right
 	{0x00,0x00,0x00,0x00,0x00,0x00}, // space
 	{0x5f,0x00,0x00,0x00,0x00,0x00}, // !
 	{0x03,0x00,0x03,0x00,0x00,0x00}, // "
@@ -1004,8 +1016,9 @@ clear_text_row (unsigned int rowcol, unsigned short last_col, int do_top_row)
 
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
+// Note the colors here are not the same as the colors used by draw_string()
 static int
-draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background)
+draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background, int trippy)
 {
 	unsigned char num_cols;
 	const unsigned char *font_entry;
@@ -1014,9 +1027,9 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 	if (pixel_row >= EMPEG_SCREEN_ROWS)
 		return 0;
 	displayrow = &hijack_displaybuf[pixel_row][0];
-	if (c > '~' || c < ' ')
+	if (c > LAST_CHAR || c < FIRST_CHAR)
 		c = ' ';
-	font_entry = &kfont[c - ' '][0];
+	font_entry = &kfont[c - FIRST_CHAR][0];
 	if (!(num_cols = kfont_spacing)) {  // variable width font spacing?
 		if (c == ' ')
 			num_cols = 3;
@@ -1032,6 +1045,10 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 			unsigned char font_bit    = font_entry[offset] & (1 << pixel_row);
 			unsigned char new_pixel   = (font_bit ? foreground : background) & pixel_mask;
 			unsigned char *pixel_pair = &displayrow[(pixel_col + offset) >> 1];
+			if (trippy) {
+				foreground += 1;
+				foreground &= 0xf;
+			}
 			*pixel_pair = ( (*pixel_pair & (pixel_mask = ~pixel_mask)) ) | new_pixel;
 		} while (++offset < num_cols);
 		displayrow += (EMPEG_SCREEN_COLS / 2);
@@ -1073,7 +1090,7 @@ top:	if (row < EMPEG_SCREEN_ROWS) {
 		unsigned char c;
 		while ((c = *s)) {
 			int col_adj;
-			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, foreground, background))) {
+			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, foreground, background,0))) {
 				if (no_wraplines)
 					break;
 				col  = 0;
@@ -1595,6 +1612,7 @@ init_temperature (int force)
 		empeg_inittherm(&OSMR0,&GPLR);
 	}
 	restore_flags(flags);
+
 }
 
 int
@@ -2833,6 +2851,210 @@ game_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+// LittleBlueThing's WhackA??? menu entry
+// A game where characters pop up at the edges of the display
+// and you whack them by pressing the up/down/left/right buttons.
+
+int wam_sel = 0;
+int wam_dodisplay = 0;  // 0:nothing 1:logo/frame#1 2:animation
+int wam_domenu = 0;     // menu selection changed: redisplay
+int	wam_playing = 0;    // game in progress
+int wam_next_mole_time = 0;
+int wam_loc = 0;        // Where's henry
+int wam_whack = 0;      // Where did you hit
+int wam_status = 0;     // What happened?
+int wam_score = 0;      // Score
+int wam_score_counted = 0;     // Score counted?
+unsigned int  wam_framet = 0;  // time frame displayed
+unsigned char wam_rand_b ;     // place to put a random byte
+
+// This changes how often henries appear 4 = always somewhere...
+// higher numbers mean more empty screen.
+#define wam_henry_freq 6
+// This is how long henry hangs around for. 512 s fairly easy
+int wam_time_limit = 255;
+
+#define WAM_NONE 0
+#define WAM_UP 1
+#define WAM_DOWN 2
+#define WAM_LEFT 3
+#define WAM_RIGHT 4
+
+#define WAM_NOGO 0
+#define WAM_HIT 1
+#define WAM_MISS 2
+#define WAM_SCORE_COUNTED 3
+
+typedef struct glyph_s {
+	unsigned short   width;
+	unsigned short   height;
+	const char		 *data;
+} glyph_t;
+
+/* static wam_graphics[] = {
+	{5, 5, {
+		};
+*/
+
+
+static void
+//wam_draw_glyph (unsigned short pixel_row, short pixel_col, unsigned char *glyph, unsigned char foreground, unsigned char background)
+wam_draw_glyph (unsigned short pixel_row, short pixel_col, unsigned char glyph, unsigned char foreground, unsigned char background)
+{
+	draw_char(pixel_row, pixel_col, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0,0);
+	draw_char(pixel_row, pixel_col+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0,0);
+}
+
+static void
+wam_move (int move)
+{
+	if (wam_score_counted)
+		return;
+
+	wam_whack = move;
+	printk("WAM: wam_loc: %d  wam_whack:%d\n", wam_loc, wam_whack);
+	if (wam_whack == wam_loc) {
+		wam_status = WAM_HIT;
+	} else {
+		wam_status = WAM_MISS;
+	}
+}
+
+static int
+wam_display (int firsttime)
+{
+	hijack_buttondata_t data;
+	unsigned char buf[20];
+	unsigned short row=0;
+	short col =0 ;
+	int refresh = NO_REFRESH; 
+	
+	if (firsttime || wam_domenu) {
+		// Show the menu text
+		clear_hijack_displaybuf(COLOR0);
+		(void) draw_string(ROWCOL(0,0), "Welcome to Whack-a-Mole.\nleft/right/up/down to whack.\nKnob: turn starts, press exits", PROMPTCOLOR);
+		// Do our own button handling
+		hijack_buttonlist = intercept_all_buttons;
+		hijack_initq(&hijack_userq, 'U');
+
+		// setup game state
+		wam_domenu= 0;
+		wam_playing = 0;
+		wam_score=0;
+		return NEED_REFRESH;
+	}	
+	// Do our own button handling
+	if (hijack_button_deq(&hijack_userq, &data, 0)) {
+		switch (data.button) {
+		case IR_TOP_BUTTON_PRESSED:
+			wam_move(WAM_UP); break;
+		case IR_LEFT_BUTTON_PRESSED:
+			wam_move(WAM_LEFT); break;
+		case IR_RIGHT_BUTTON_PRESSED:
+			wam_move(WAM_RIGHT); break;
+		case IR_BOTTOM_BUTTON_PRESSED:
+			wam_move(WAM_DOWN); break;
+		case IR_KNOB_RIGHT:
+		case IR_KNOB_LEFT:
+			wam_playing = 1;
+			break;
+		case IR_KNOB_PRESSED:
+			hijack_buttonlist = NULL;
+			ir_selected = 1; // return to main menu
+			break;
+		}
+	}
+
+	if (! wam_playing) {
+		return NO_REFRESH;
+	}
+	
+	if 	(jiffies_since(wam_framet) >= wam_next_mole_time)
+	{
+		// Start listening to button presses and stop showing hit/miss
+		wam_score_counted=0;
+		wam_status = WAM_NOGO;
+	}
+
+	if (wam_status) {
+		int row = 40;
+		int col = 8;		
+		int j = JIFFIES() & 0xf;
+		row+=j;
+		col+=(j&7);
+		j|=j<<4;
+		clear_hijack_displaybuf(COLOR0);
+		if (wam_status == WAM_HIT) {// (COLOR0<<4)|COLOR0
+			row+=draw_char(col,row, 'H', j, COLOR0,0);		  
+			row+=draw_char(col,row, 'I', j+1, COLOR0,0);
+			row+=draw_char(col,row, 'T', j+2, COLOR0,0);
+			row+=draw_char(col,row, ' ', j+2, COLOR0,0);
+			row+=draw_char(col,row, '!', j+3, COLOR0,0);
+			row+=draw_char(col,row, '!', j+4, COLOR0,0);
+		} else if (wam_status == WAM_MISS) {
+			row+=draw_char(col,row, 'M', j, COLOR0,0);
+			row+=draw_char(col,row, 'I', j, COLOR0,0);
+			row+=draw_char(col,row, 'S', j, COLOR0,0);
+			row+=draw_char(col,row, 'S', j, COLOR0,0);
+			row+=draw_char(col,row, '!', j, COLOR0,0);
+			row+=draw_char(col,row, '!', j, COLOR0,0);
+		}
+		if (!wam_score_counted){
+			wam_framet = JIFFIES();
+			wam_score_counted=1;
+			if (wam_status == WAM_MISS) {
+				wam_score-=1;
+				wam_next_mole_time = HZ/2;
+			} else if (wam_status == WAM_HIT) {
+				wam_next_mole_time = HZ;
+				wam_score+=1;
+			}
+		}
+		sprintf(buf, "Score : %3d",wam_score);
+		(void) draw_string(ROWCOL(3,0), buf, PROMPTCOLOR);	
+		return NEED_REFRESH; // every time - flickery display
+	}
+
+	// If there's no hit AND we're out of time then:
+	// * get a new time
+	// * get a new mole
+	// * draw the mole
+	//
+	
+	if 	(jiffies_since(wam_framet) < wam_next_mole_time)
+		return refresh;
+
+	clear_hijack_displaybuf(COLOR0);
+	
+	get_random_bytes(&wam_next_mole_time,2);
+	wam_next_mole_time %= wam_time_limit;
+
+	get_random_bytes(&wam_rand_b,1);
+	wam_loc = (int)(wam_rand_b % wam_henry_freq) + 1;
+	printk("wam_loc:%d\n", wam_loc);
+	
+	switch (wam_loc) {
+	case WAM_UP    : col=56;  row=0;
+		break;
+	case WAM_DOWN  : col=56;  row=24;
+		break;
+	case WAM_LEFT  : col=0;   row=8;
+		break;
+	case WAM_RIGHT : col=104; row=8;
+		break;
+	default :
+		wam_loc=WAM_NONE;
+		break;
+	}
+	
+	if (wam_loc != WAM_NONE) { // Do we have a henry?
+		wam_draw_glyph(row, col, '0', COLOR0, COLOR3);
+	}
+	wam_framet = JIFFIES();
+	return NEED_REFRESH;
+}
+
+
 /* Time Alignment Setup Code - Christian Hack 2002 - christianh@pdd.edmi.com.au */
 /* Allows user adjustment of channel delay for time alignment. Time alignment   */
 /* is actually done in empeg_audio3.c. thru global var hijack_delaytime         */
@@ -3288,6 +3510,7 @@ showbutton_display (int firsttime)
 
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
+	{"Whack-a-mole",		    wam_display,	NULL,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
