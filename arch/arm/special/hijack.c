@@ -2855,9 +2855,6 @@ game_display (int firsttime)
 // A game where characters pop up at the edges of the display
 // and you whack them by pressing the up/down/left/right buttons.
 
-int wam_sel = 0;
-int wam_dodisplay = 0;  // 0:nothing 1:logo/frame#1 2:animation
-int wam_domenu = 0;     // menu selection changed: redisplay
 int	wam_playing = 0;    // game in progress
 int wam_next_mole_time = 0;
 int wam_loc = 0;        // Where's henry
@@ -2874,6 +2871,9 @@ unsigned char wam_rand_b ;     // place to put a random byte
 // This is how long henry hangs around for. 512 s fairly easy
 int wam_time_limit = 255;
 
+int wam_time_left;
+#define WAM_INITIAL_TIME 30
+
 #define WAM_NONE 0
 #define WAM_UP 1
 #define WAM_DOWN 2
@@ -2884,6 +2884,8 @@ int wam_time_limit = 255;
 #define WAM_HIT 1
 #define WAM_MISS 2
 #define WAM_SCORE_COUNTED 3
+#define WAM_GAME_OVER 4
+#define WAM_WAIT_RESTART 5
 
 typedef struct glyph_s {
 	unsigned short   width;
@@ -2929,20 +2931,28 @@ wam_display (int firsttime)
 	short col =0 ;
 	int refresh = NO_REFRESH; 
 	
-	if (firsttime || wam_domenu) {
+	if (firsttime || (wam_status == WAM_GAME_OVER)) {
 		// Show the menu text
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "Welcome to Whack-a-Mole.\nleft/right/up/down to whack.\nKnob: turn starts, press exits", PROMPTCOLOR);
-		// Do our own button handling
-		hijack_buttonlist = intercept_all_buttons;
-		hijack_initq(&hijack_userq, 'U');
 
+		if (firsttime) {
+			(void) draw_string(ROWCOL(0,0), "Welcome to Whack-a-Mole.\nleft/right/up/down to whack.\nKnob: turn starts, press exits", PROMPTCOLOR);
+			// Do our own button handling
+			hijack_buttonlist = intercept_all_buttons;
+			hijack_initq(&hijack_userq, 'U');
+		} else { // GAMEOVER
+			sprintf(buf, "Game Over\n\n Score : %3d",wam_score);
+			(void) draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
+			wam_status=WAM_WAIT_RESTART;
+			wam_next_mole_time = 0;
+		}
 		// setup game state
-		wam_domenu= 0;
 		wam_playing = 0;
 		wam_score=0;
+		wam_time_left=WAM_INITIAL_TIME;
 		return NEED_REFRESH;
-	}	
+	}
+	
 	// Do our own button handling
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		switch (data.button) {
@@ -2991,6 +3001,7 @@ wam_display (int firsttime)
 			row+=draw_char(col,row, ' ', j+2, COLOR0,0);
 			row+=draw_char(col,row, '!', j+3, COLOR0,0);
 			row+=draw_char(col,row, '!', j+4, COLOR0,0);
+			hijack_beep(200, 100, 30);
 		} else if (wam_status == WAM_MISS) {
 			row+=draw_char(col,row, 'M', j, COLOR0,0);
 			row+=draw_char(col,row, 'I', j, COLOR0,0);
@@ -2998,11 +3009,15 @@ wam_display (int firsttime)
 			row+=draw_char(col,row, 'S', j, COLOR0,0);
 			row+=draw_char(col,row, '!', j, COLOR0,0);
 			row+=draw_char(col,row, '!', j, COLOR0,0);
+			hijack_beep(60, 100, 30);
 		}
 		if (!wam_score_counted){
 			wam_framet = JIFFIES();
 			wam_score_counted=1;
 			if (wam_status == WAM_MISS) {
+				// sad_beep()
+				if (! --wam_time_left)
+					wam_status = WAM_GAME_OVER;
 				wam_score-=1;
 				wam_next_mole_time = HZ/2;
 			} else if (wam_status == WAM_HIT) {
@@ -3015,7 +3030,7 @@ wam_display (int firsttime)
 		return NEED_REFRESH; // every time - flickery display
 	}
 
-	// If there's no hit AND we're out of time then:
+	// If there's no hit AND we're out of time for this henry then:
 	// * get a new time
 	// * get a new mole
 	// * draw the mole
@@ -3024,6 +3039,15 @@ wam_display (int firsttime)
 	if 	(jiffies_since(wam_framet) < wam_next_mole_time)
 		return refresh;
 
+	// if there was a henry and no attempt then decrement the time_left
+	if (wam_loc != WAM_NONE && wam_status==WAM_NOGO) {
+		wam_time_left-=1;
+		// sad_beep()
+		hijack_beep(30, 300, 30);
+		if (wam_time_left==0)
+			wam_status = WAM_GAME_OVER;
+	}
+	
 	clear_hijack_displaybuf(COLOR0);
 	
 	get_random_bytes(&wam_next_mole_time,2);
@@ -3049,6 +3073,18 @@ wam_display (int firsttime)
 	
 	if (wam_loc != WAM_NONE) { // Do we have a henry?
 		wam_draw_glyph(row, col, '0', COLOR0, COLOR3);
+	}
+
+	// Draw remaining time
+	{
+		int width = (100 * wam_time_left)/WAM_INITIAL_TIME;
+		int i;
+		printk("time_left : %d    width : %d\n", wam_time_left, width);
+		for (i=0; i<width; i++) {
+			draw_pixel(14,12+i, COLOR3);
+			draw_pixel(15,12+i, COLOR1);
+			draw_pixel(16,12+i, COLOR3);
+		}
 	}
 	wam_framet = JIFFIES();
 	return NEED_REFRESH;
