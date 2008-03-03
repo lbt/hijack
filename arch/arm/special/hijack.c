@@ -804,8 +804,8 @@ static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 #define HENRY_LEFTC  0x1e
 #define HENRY_RIGHTC 0x1f
 const unsigned char kfont [1 + LAST_CHAR - FIRST_CHAR][KFONT_WIDTH] = {  // variable width font
-	{0x20,0x38,0x26,0x21,0x45,0x81},  // henry-left
-	{0x45,0x21,0x26,0x38,0x20,0x20},  // henry-right
+	{0x20,0x38,0x26,0x21,0xc5,0x81},  // henry-left
+	{0xc5,0x21,0x26,0x38,0x20,0x20},  // henry-right
 	{0x00,0x00,0x00,0x00,0x00,0x00}, // space
 	{0x5f,0x00,0x00,0x00,0x00,0x00}, // !
 	{0x03,0x00,0x03,0x00,0x00,0x00}, // "
@@ -1018,7 +1018,7 @@ static unsigned char kfont_spacing = 0;  // 0 == proportional
 
 // Note the colors here are not the same as the colors used by draw_string()
 static int
-draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background, int trippy)
+draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background)
 {
 	unsigned char num_cols;
 	const unsigned char *font_entry;
@@ -1045,10 +1045,6 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 			unsigned char font_bit    = font_entry[offset] & (1 << pixel_row);
 			unsigned char new_pixel   = (font_bit ? foreground : background) & pixel_mask;
 			unsigned char *pixel_pair = &displayrow[(pixel_col + offset) >> 1];
-			if (trippy) {
-				foreground += 1;
-				foreground &= 0xf;
-			}
 			*pixel_pair = ( (*pixel_pair & (pixel_mask = ~pixel_mask)) ) | new_pixel;
 		} while (++offset < num_cols);
 		displayrow += (EMPEG_SCREEN_COLS / 2);
@@ -1090,7 +1086,7 @@ top:	if (row < EMPEG_SCREEN_ROWS) {
 		unsigned char c;
 		while ((c = *s)) {
 			int col_adj;
-			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, foreground, background,0))) {
+			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, foreground, background))) {
 				if (no_wraplines)
 					break;
 				col  = 0;
@@ -2855,6 +2851,8 @@ game_display (int firsttime)
 // A game where characters pop up at the edges of the display
 // and you whack them by pressing the up/down/left/right buttons.
 
+// Tested by Denise...
+
 unsigned short wam_playing = 0;    // game in progress
 int wam_next_mole_time = 0;
 unsigned short wam_loc = 0;        // Where's henry
@@ -2862,7 +2860,7 @@ unsigned short wam_whack = 0;      // Where did you hit or WAM_NONE
 unsigned short wam_status = 0;     // What happened?
 short wam_score = 0;      // Score
 unsigned short wam_score_counted = 0;     // Score counted?
-unsigned int  wame_molet = 0;      // time mole displayed
+unsigned int  wam_molet = 0;      // time mole displayed
 
 // This changes how often henries appear 4 = always somewhere...
 // higher numbers mean more empty screen.
@@ -2885,8 +2883,9 @@ int wam_misses_left;
 #define WAM_DOWN 2
 #define WAM_LEFT 3
 #define WAM_RIGHT 4
+#define WAM_DONE 5
 
-#define WAM_NOGO 0
+#define WAM_READY 0
 #define WAM_HIT 1
 #define WAM_MISS 2
 #define WAM_SCORE_COUNTED 3
@@ -2904,15 +2903,6 @@ typedef struct glyph_s {
 		};
 */
 
-
-static void
-//wam_draw_glyph (unsigned short pixel_row, short pixel_col, unsigned char *glyph, unsigned char foreground, unsigned char background)
-wam_draw_glyph (unsigned short pixel_row, short pixel_col, unsigned char glyph, unsigned char foreground, unsigned char background)
-{
-	draw_char(pixel_row, pixel_col, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0,0);
-	draw_char(pixel_row, pixel_col+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0,0);
-}
-
 static void
 wam_move (int move)
 {
@@ -2927,6 +2917,16 @@ wam_move (int move)
 		printk("MISS\n");
 		wam_status = WAM_MISS;
 	}
+}
+
+static void
+wam_init_game (void) {
+		// setup game state
+		wam_whack = WAM_NONE;
+		wam_loc = WAM_NONE;
+		wam_score=0;
+		wam_misses_left=WAM_MISSES;
+		printk("misses_left : %d\n", wam_misses_left);
 }
 
 static int
@@ -2946,23 +2946,24 @@ wam_display (int firsttime)
 			// Do our own button handling
 			hijack_buttonlist = intercept_all_buttons;
 			hijack_initq(&hijack_userq, 'U');
+			wam_status=WAM_READY;
 		} else { // GAMEOVER
-			sprintf(buf, "Game Over\n\n Score : %3d",wam_score);
-			(void) draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
+			sprintf(buf, "Game Over\nScore : %3d",wam_score);
+			(void) draw_string(ROWCOL(0,20), buf, PROMPTCOLOR);
+			draw_char(8, 90, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+			draw_char(8, 90+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+
 			wam_status=WAM_WAIT_RESTART;
 			wam_next_mole_time = 0;
 		}
-		// setup game state
-		wam_whack = WAM_NONE;
 		wam_playing = 0;
-		wam_score=0;
-		wam_misses_left=WAM_MISSES;
-		printk("misses_left : %d\n", wam_misses_left);
+		wam_init_game();
 		return NEED_REFRESH;
 	}
 	
 	// Do our own button handling
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
+		printk("KEY\n");
 		switch (data.button) {
 		case IR_TOP_BUTTON_PRESSED:
 			wam_move(WAM_UP); break;
@@ -2974,7 +2975,14 @@ wam_display (int firsttime)
 			wam_move(WAM_DOWN); break;
 		case IR_KNOB_RIGHT:
 		case IR_KNOB_LEFT:
+			wam_init_game();
+			wam_status=WAM_WAIT_RESTART;
 			wam_playing = 1;
+			wam_molet=JIFFIES();
+			wam_next_mole_time = 100;
+			clear_hijack_displaybuf(COLOR0);
+			(void) draw_string(ROWCOL(1,20)," GET READY ... " , PROMPTCOLOR);
+			return NEED_REFRESH;
 			break;
 		case IR_KNOB_PRESSED:
 			hijack_buttonlist = NULL;
@@ -2986,16 +2994,22 @@ wam_display (int firsttime)
 	if (! wam_playing) {
 		return NO_REFRESH;
 	}
-	
-	if 	(wam_whack == WAM_NONE && jiffies_since(wame_molet) >= wam_next_mole_time)
+
+	// if timeout passed - mark it as a READY so we stop showing hit/miss
+	// A keypress could just have arrived so only do this if there isn't one
+	// or if it's marked 'done'
+	if 	((jiffies_since(wam_molet) >= wam_next_mole_time) &&
+		(wam_whack == WAM_NONE || wam_whack == WAM_DONE))
 	{
-		// Start listening to button presses and stop showing hit/miss
 		wam_score_counted=0;
-		wam_status = WAM_NOGO;
-		printk("NOGO\n");
+		wam_status = WAM_READY;
+		printk("READY\n");
 	}
 
-	if (wam_status) {
+	// if it's a hit/miss then flash up the message and change the score
+	// the 'double' time check is because this bit needs re-displaying every
+	// display cycle for the fancy(!) shaking text. Was it worth it?
+	if (wam_status == WAM_HIT || wam_status == WAM_MISS) {
 		int row = 40;
 		int col = 8;		
 		int j = JIFFIES() & 0xf;
@@ -3004,24 +3018,24 @@ wam_display (int firsttime)
 		j|=j<<4;
 		clear_hijack_displaybuf(COLOR0);
 		if (wam_status == WAM_HIT) {// (COLOR0<<4)|COLOR0
-			row+=draw_char(col,row, 'H', j, COLOR0,0);		  
-			row+=draw_char(col,row, 'I', j+1, COLOR0,0);
-			row+=draw_char(col,row, 'T', j+2, COLOR0,0);
-			row+=draw_char(col,row, ' ', j+2, COLOR0,0);
-			row+=draw_char(col,row, '!', j+3, COLOR0,0);
-			row+=draw_char(col,row, '!', j+4, COLOR0,0);
+			row+=draw_char(col,row, 'H', j, COLOR0);		  
+			row+=draw_char(col,row, 'I', j+1, COLOR0);
+			row+=draw_char(col,row, 'T', j+2, COLOR0);
+			row+=draw_char(col,row, ' ', j+2, COLOR0);
+			row+=draw_char(col,row, '!', j+3, COLOR0);
+			row+=draw_char(col,row, '!', j+4, COLOR0);
 		} else if (wam_status == WAM_MISS) {
-			row+=draw_char(col,row, 'M', j, COLOR0,0);
-			row+=draw_char(col,row, 'I', j, COLOR0,0);
-			row+=draw_char(col,row, 'S', j, COLOR0,0);
-			row+=draw_char(col,row, 'S', j, COLOR0,0);
-			row+=draw_char(col,row, '!', j, COLOR0,0);
-			row+=draw_char(col,row, '!', j, COLOR0,0);
+			row+=draw_char(col,row, 'M', j, COLOR0);
+			row+=draw_char(col,row, 'I', j, COLOR0);
+			row+=draw_char(col,row, 'S', j, COLOR0);
+			row+=draw_char(col,row, 'S', j, COLOR0);
+			row+=draw_char(col,row, '!', j, COLOR0);
+			row+=draw_char(col,row, '!', j, COLOR0);
 		}
 		if (!wam_score_counted){
-			wame_molet = JIFFIES();
+			wam_molet = JIFFIES();
 			wam_score_counted=1;
-			wam_whack = WAM_NONE;  // mark whack as 'seen'
+			wam_whack = WAM_DONE;  // mark whack as 'seen'
 			if (wam_status == WAM_MISS) {
 				hijack_beep(60, 100, 30);	// sad beep
 				if (! --wam_misses_left)
@@ -3033,7 +3047,7 @@ wam_display (int firsttime)
 				hijack_beep(200, 100, 30); // happy beep
 				wam_next_mole_time = HZ;
 				wam_score+=1;
-				printk("MISS: %d\n", wam_score);
+				printk("HIT: %d\n", wam_score);
 			}
 			switch (wam_score / 10) {				
 			case 0: wam_time_limit = WAM_TIME_LIMIT_10; break;
@@ -3050,18 +3064,19 @@ wam_display (int firsttime)
 		return NEED_REFRESH; // every time - flickery display
 	}
 
+	// 
+	if 	(jiffies_since(wam_molet) <= wam_next_mole_time)
+		return refresh;
+
+
 	// If there's no hit AND we're out of time for this henry then:
 	// * get a new time
 	// * get a new mole
 	// * draw the mole
-	//
-	
-	if 	(jiffies_since(wame_molet) < wam_next_mole_time)
-		return refresh;
-	printk("New mole\n");
+
 	// if there was a henry and no attempt then decrement the misses_left
 	if (wam_loc != WAM_NONE && wam_whack==WAM_NONE) {
-		wam_misses_left-=1;
+		wam_misses_left--;
 		printk("NOGO: misses_left : %d\n", wam_misses_left);
 		// sad_beep()
 		hijack_beep(30, 300, 30);
@@ -3069,6 +3084,7 @@ wam_display (int firsttime)
 			wam_status = WAM_GAME_OVER;
 	}
 	
+	printk("\nNew mole\n");
 	clear_hijack_displaybuf(COLOR0);
 
 	if (wam_loc == WAM_NONE) { // maybe draw a henry?
@@ -3076,7 +3092,7 @@ wam_display (int firsttime)
 		get_random_bytes(&rand_b,1);
 		wam_next_mole_time = rand_b % wam_time_limit;
 		wam_next_mole_time += WAM_MIN_TIME;
-		printk("next_mole : %d\n",wam_next_mole_time);
+		printk("next_mole due : %d\n",wam_next_mole_time);
 
 		get_random_bytes(&rand_b,1);
 		wam_loc = (int)(rand_b % wam_henry_freq) + 1;
@@ -3094,7 +3110,9 @@ wam_display (int firsttime)
 			break;
 		}		
 		if (wam_loc != WAM_NONE) { // Do we have a henry?
-			wam_draw_glyph(row, col, '0', COLOR0, COLOR3);
+			printk("Mole up\n");
+			draw_char(row, col, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+			draw_char(row, col+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
 		}
 	} else { // force a delay after showing a henry
 		wam_next_mole_time = WAM_MIN_TIME*2;		
@@ -3103,7 +3121,7 @@ wam_display (int firsttime)
 
 	// Draw remaining time
 	{
-		int width = (100 * wam_misses_left)/WAM_MISSES;
+		int width = (100 * (wam_misses_left-1))/WAM_MISSES;
 		int i;
 		for (i=0; i<width; i++) {
 			draw_pixel(14,12+i, COLOR3);
@@ -3111,7 +3129,7 @@ wam_display (int firsttime)
 			draw_pixel(16,12+i, COLOR3);
 		}
 	}
-	wame_molet = JIFFIES();
+	wam_molet = JIFFIES();
 	wam_whack = WAM_NONE; // mark start of new attempt
 	return NEED_REFRESH;
 }
