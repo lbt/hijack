@@ -19,6 +19,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include <linux/kernel_stat.h>
 #include <linux/unistd.h>
 #include <linux/dirent.h>
+#include <linux/random.h>
 
 #include <linux/empeg.h>
 #include <asm/uaccess.h>
@@ -798,7 +799,18 @@ static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
-const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width font
+// Font characters are specified in an 6x8 (wxh) matrix
+// each byte represents a column msb at the bottom
+// no antialiasing <sigh>
+
+#define FIRST_CHAR (unsigned char)0x1e  // was ' '. Reduce if adding chars to start of list
+#define LAST_CHAR (unsigned char)0x7f  // was '~'. Increase if adding chars to end of list
+
+#define HENRY_LEFTC  0x1e
+#define HENRY_RIGHTC 0x1f
+const unsigned char kfont [1 + LAST_CHAR - FIRST_CHAR][KFONT_WIDTH] = {  // variable width font
+	{0x20,0x38,0x26,0x21,0xc5,0x81},  // henry-left
+	{0xc5,0x21,0x26,0x38,0x20,0x20},  // henry-right
 	{0x00,0x00,0x00,0x00,0x00,0x00}, // space
 	{0x5f,0x00,0x00,0x00,0x00,0x00}, // !
 	{0x03,0x00,0x03,0x00,0x00,0x00}, // "
@@ -1009,6 +1021,7 @@ clear_text_row (unsigned int rowcol, unsigned short last_col, int do_top_row)
 
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
+// Note the colors here are not the same as the colors used by draw_string()
 static int
 draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background)
 {
@@ -1019,9 +1032,9 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 	if (pixel_row >= EMPEG_SCREEN_ROWS)
 		return 0;
 	displayrow = &hijack_displaybuf[pixel_row][0];
-	if (c > '~' || c < ' ')
+	if (c > LAST_CHAR || c < FIRST_CHAR)
 		c = ' ';
-	font_entry = &kfont[c - ' '][0];
+	font_entry = &kfont[c - FIRST_CHAR][0];
 	if (!(num_cols = kfont_spacing)) {  // variable width font spacing?
 		if (c == ' ')
 			num_cols = 3;
@@ -1600,6 +1613,7 @@ init_temperature (int force)
 		empeg_inittherm(&OSMR0,&GPLR);
 	}
 	restore_flags(flags);
+
 }
 
 int
@@ -2959,6 +2973,294 @@ bootg_display (int firsttime)
 	return NO_REFRESH;
 }
 
+// LittleBlueThing's WhackA??? menu entry
+// A game where characters pop up at the edges of the display
+// and you whack them by pressing the up/down/left/right buttons.
+
+// Tested by Denise...
+
+unsigned short wam_playing = 0;    // game in progress
+int wam_next_mole_time = 0;
+unsigned short wam_loc = 0;        // Where's henry
+unsigned short wam_whack = 0;      // Where did you hit or WAM_NONE
+unsigned short wam_status = 0;     // What happened?
+short wam_score = 0;      // Score
+unsigned short wam_score_counted = 0;     // Score counted?
+unsigned int  wam_molet = 0;      // time mole displayed
+
+// This changes how often henries appear 4 = always somewhere...
+// higher numbers mean more empty screen.
+#define wam_henry_freq 6
+// This is how long henry hangs around for in jiffies 128 is fairly easy
+#define WAM_MIN_TIME 30
+#define WAM_TIME_LIMIT_10 80
+#define WAM_TIME_LIMIT_20 60
+#define WAM_TIME_LIMIT_30 40
+#define WAM_TIME_LIMIT_40 20
+#define WAM_TIME_LIMIT_50 0 // got to be kidding!!
+#define WAM_IN_CAR_EASIER 15 // extra time in the car
+int wam_time_limit = WAM_TIME_LIMIT_10;
+
+int wam_misses_left;
+#define WAM_MISSES 10
+
+#define WAM_NONE 0
+#define WAM_UP 1
+#define WAM_DOWN 2
+#define WAM_LEFT 3
+#define WAM_RIGHT 4
+#define WAM_DONE 5
+
+#define WAM_READY 0
+#define WAM_HIT 1
+#define WAM_MISS 2
+#define WAM_SCORE_COUNTED 3
+#define WAM_GAME_OVER 4
+#define WAM_WAIT_RESTART 5
+
+typedef struct glyph_s {
+	unsigned short   width;
+	unsigned short   height;
+	const char		 *data;
+} glyph_t;
+
+/* static wam_graphics[] = {
+	{5, 5, {
+		};
+*/
+
+static void
+wam_move (int move)
+{
+	if (wam_score_counted)
+		return;
+
+	wam_whack = move;
+	if (wam_whack == wam_loc) {
+		printk("HIT\n");
+		wam_status = WAM_HIT;
+	} else {
+		printk("MISS\n");
+		wam_status = WAM_MISS;
+	}
+}
+
+static void
+wam_init_game (void) {
+		// setup game state
+		wam_whack = WAM_NONE;
+		wam_loc = WAM_NONE;
+		wam_score=0;
+		wam_misses_left=WAM_MISSES;
+		printk("misses_left : %d\n", wam_misses_left);
+}
+
+static int
+wam_display (int firsttime)
+{
+	hijack_buttondata_t data;
+	unsigned char buf[20];
+	unsigned short row=0;
+	short col =0 ;
+	int refresh = NO_REFRESH; 
+	
+	if (firsttime || (wam_status == WAM_GAME_OVER)) {
+		clear_hijack_displaybuf(COLOR0);
+		if (firsttime) {
+			// Show the menu text
+			(void) draw_string(ROWCOL(0,0), "Welcome to Whack-a-Mole.\nleft/right/up/down to whack.\nKnob: turn starts, press exits", PROMPTCOLOR);
+			// Do our own button handling
+			hijack_buttonlist = intercept_all_buttons;
+			hijack_initq(&hijack_userq, 'U');
+			wam_status=WAM_READY;
+		} else { // GAMEOVER
+			sprintf(buf, "Game Over\nScore : %3d",wam_score);
+			(void) draw_string(ROWCOL(0,20), buf, PROMPTCOLOR);
+			draw_char(8, 90, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+			draw_char(8, 90+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+
+			wam_status=WAM_WAIT_RESTART;
+			wam_next_mole_time = 0;
+		}
+		wam_playing = 0;
+		wam_init_game();
+		return NEED_REFRESH;
+	}
+	
+	// Do our own button handling
+	if (hijack_button_deq(&hijack_userq, &data, 0)) {
+		printk("KEY\n");
+		switch (data.button) {
+		case IR_TOP_BUTTON_PRESSED:
+			wam_move(WAM_UP); break;
+		case IR_LEFT_BUTTON_PRESSED:
+			wam_move(WAM_LEFT); break;
+		case IR_RIGHT_BUTTON_PRESSED:
+			wam_move(WAM_RIGHT); break;
+		case IR_BOTTOM_BUTTON_PRESSED:
+			wam_move(WAM_DOWN); break;
+		case IR_KNOB_RIGHT:
+		case IR_KNOB_LEFT:
+			wam_init_game();
+			wam_status=WAM_WAIT_RESTART;
+			wam_playing = 1;
+			wam_molet=JIFFIES();
+			wam_next_mole_time = 100;
+			clear_hijack_displaybuf(COLOR0);
+			(void) draw_string(ROWCOL(1,20)," GET READY ... " , PROMPTCOLOR);
+			return NEED_REFRESH;
+			break;
+		case IR_KNOB_PRESSED:
+			hijack_buttonlist = NULL;
+			ir_selected = 1; // return to main menu
+			break;
+		}
+	}
+
+	if (! wam_playing) {
+		return NO_REFRESH;
+	}
+
+	// if timeout passed - mark it as a READY so we stop showing hit/miss
+	// A keypress could just have arrived so only do this if there isn't one
+	// or if it's marked 'done'
+	if 	((jiffies_since(wam_molet) >= wam_next_mole_time) &&
+		(wam_whack == WAM_NONE || wam_whack == WAM_DONE))
+	{
+		wam_score_counted=0;
+		wam_status = WAM_READY;
+		printk("READY\n");
+	}
+
+	// if it's a hit/miss then flash up the message and change the score
+	// the 'double' time check is because this bit needs re-displaying every
+	// display cycle for the fancy(!) shaking text. Was it worth it?
+	if (wam_status == WAM_HIT || wam_status == WAM_MISS) {
+		int row = 40;
+		int col = 8;		
+		int j = JIFFIES() & 0xf;
+		row+=j;
+		col+=(j&7);
+		j|=j<<4;
+		clear_hijack_displaybuf(COLOR0);
+		if (wam_status == WAM_HIT) {// (COLOR0<<4)|COLOR0
+			row+=draw_char(col,row, 'H', j, COLOR0);		  
+			row+=draw_char(col,row, 'I', j+1, COLOR0);
+			row+=draw_char(col,row, 'T', j+2, COLOR0);
+			row+=draw_char(col,row, ' ', j+2, COLOR0);
+			row+=draw_char(col,row, '!', j+3, COLOR0);
+			row+=draw_char(col,row, '!', j+4, COLOR0);
+		} else if (wam_status == WAM_MISS) {
+			row+=draw_char(col,row, 'M', j, COLOR0);
+			row+=draw_char(col,row, 'I', j, COLOR0);
+			row+=draw_char(col,row, 'S', j, COLOR0);
+			row+=draw_char(col,row, 'S', j, COLOR0);
+			row+=draw_char(col,row, '!', j, COLOR0);
+			row+=draw_char(col,row, '!', j, COLOR0);
+		}
+		if (!wam_score_counted){
+			wam_molet = JIFFIES();
+			wam_score_counted=1;
+			wam_whack = WAM_DONE;  // mark whack as 'seen'
+			if (wam_status == WAM_MISS) {
+				hijack_beep(60, 100, 30);	// sad beep
+				if (! --wam_misses_left)
+					wam_status = WAM_GAME_OVER;
+				printk("MISS: misses_left : %d\n", wam_misses_left);
+				wam_score-=1;
+				wam_next_mole_time = HZ/2;
+			} else if (wam_status == WAM_HIT) {
+				hijack_beep(200, 100, 30); // happy beep
+				wam_next_mole_time = HZ;
+				wam_score+=1;
+				printk("HIT: %d\n", wam_score);
+			}
+			switch (wam_score / 10) {				
+			case 0: wam_time_limit = WAM_TIME_LIMIT_10; break;
+			case 1: wam_time_limit = WAM_TIME_LIMIT_20; break;
+			case 2: wam_time_limit = WAM_TIME_LIMIT_30; break;
+			case 3: wam_time_limit = WAM_TIME_LIMIT_40; break;
+			default: wam_time_limit = WAM_TIME_LIMIT_50;
+			}
+			// make it easier in the car
+			wam_time_limit+=empeg_on_dc_power?WAM_IN_CAR_EASIER:0;
+		}
+		sprintf(buf, "Score : %3d",wam_score);
+		(void) draw_string(ROWCOL(3,0), buf, PROMPTCOLOR);	
+		return NEED_REFRESH; // every time - flickery display
+	}
+
+	// 
+	if 	(jiffies_since(wam_molet) <= wam_next_mole_time)
+		return refresh;
+
+
+	// If there's no hit AND we're out of time for this henry then:
+	// * get a new time
+	// * get a new mole
+	// * draw the mole
+
+	// if there was a henry and no attempt then decrement the misses_left
+	if (wam_loc != WAM_NONE && wam_whack==WAM_NONE) {
+		wam_misses_left--;
+		printk("NOGO: misses_left : %d\n", wam_misses_left);
+		// sad_beep()
+		hijack_beep(30, 300, 30);
+		if (wam_misses_left==0)
+			wam_status = WAM_GAME_OVER;
+	}
+	
+	printk("\nNew mole\n");
+	clear_hijack_displaybuf(COLOR0);
+
+	if (wam_loc == WAM_NONE) { // maybe draw a henry?
+		unsigned char rand_b ;         // place to put a random byte
+		get_random_bytes(&rand_b,1);
+		wam_next_mole_time = rand_b % wam_time_limit;
+		wam_next_mole_time += WAM_MIN_TIME;
+		printk("next_mole due : %d\n",wam_next_mole_time);
+
+		get_random_bytes(&rand_b,1);
+		wam_loc = (int)(rand_b % wam_henry_freq) + 1;
+		switch (wam_loc) {
+		case WAM_UP    : col=56;  row=0;
+			break;
+		case WAM_DOWN  : col=56;  row=24;
+			break;
+		case WAM_LEFT  : col=0;   row=8;
+			break;
+		case WAM_RIGHT : col=104; row=8;
+			break;
+		default :
+			wam_loc=WAM_NONE;
+			break;
+		}		
+		if (wam_loc != WAM_NONE) { // Do we have a henry?
+			printk("Mole up\n");
+			draw_char(row, col, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+			draw_char(row, col+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
+		}
+	} else { // force a delay after showing a henry
+		wam_next_mole_time = WAM_MIN_TIME*2;		
+		wam_loc=WAM_NONE;
+	}	
+
+	// Draw remaining time
+	{
+		int width = (100 * (wam_misses_left-1))/WAM_MISSES;
+		int i;
+		for (i=0; i<width; i++) {
+			draw_pixel(14,12+i, COLOR3);
+			draw_pixel(15,12+i, COLOR1);
+			draw_pixel(16,12+i, COLOR3);
+		}
+	}
+	wam_molet = JIFFIES();
+	wam_whack = WAM_NONE; // mark start of new attempt
+	return NEED_REFRESH;
+}
+
+
 /* Time Alignment Setup Code - Christian Hack 2002 - christianh@pdd.edmi.com.au */
 /* Allows user adjustment of channel delay for time alignment. Time alignment   */
 /* is actually done in empeg_audio3.c. thru global var hijack_delaytime         */
@@ -3415,6 +3717,7 @@ showbutton_display (int firsttime)
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
 	{"Boot Graphics",		    bootg_display,	bootg_move,		0},
+ 	{"Whack-a-mole",		    wam_display,	NULL,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
