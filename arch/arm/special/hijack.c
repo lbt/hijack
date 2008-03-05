@@ -2860,10 +2860,13 @@ static bootg_t bootg_options[] = {
 	{"Home Logo",'L',(unsigned char*)(EMPEG_FLASHBASE+0xa000+4)},
 	{"BSOD",'L',nohd_img},
 	{0,0,0 } };  // 0 termination required
+#define BOOTG_MAX_OPTION 4
 
-int bootg_sel = 0;
-int bootg_dodisplay = 0;  // 0:nothing 1:logo/frame#1 2:animation
-int bootg_domenu = 0;     // menu selection changed: redisplay
+
+short bootg_sel = 0;
+short bootg_dodisplay = 0;  // 0:nothing 1:logo/frame#1 2:animation
+short bootg_domenu = 0;     // menu selection changed: redisplay
+short bootg_inmenu = 0;     // showing menu?
 int	bootg_frame = 0; // frame count in animation
 unsigned int  bootg_framet = 0;  // time frame displayed
 unsigned int* bootg_anim; // start of animation in memory
@@ -2873,9 +2876,9 @@ bootg_move (int direction)
 {
 	bootg_sel += direction;
 	if (bootg_sel < 0)
-		bootg_sel = 0;
+		bootg_sel = BOOTG_MAX_OPTION;
 	else if (bootg_options[bootg_sel].type == 0)
-		bootg_sel   -= 1;
+		bootg_sel   = 0;
 }
 
 static int
@@ -2887,10 +2890,11 @@ bootg_display (int firsttime)
 	if (firsttime || bootg_domenu) {
 		// Show the menu text
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "View boot graphics.\nKnob selects\nRight: view, Left: return here", PROMPTCOLOR);
+		(void) draw_string(ROWCOL(0,0), "==View boot graphics==\nKnob-press/Down to view\nRight/Left: change  Up: Exit", PROMPTCOLOR);
 		rowcol = draw_string(ROWCOL(3,0), "[", PROMPTCOLOR);
 		rowcol = draw_string_spaced(rowcol, bootg_options[bootg_sel].label, ENTRYCOLOR);
 		(void)  draw_string(rowcol, "]", PROMPTCOLOR);
+		bootg_inmenu = 1;
 
 		// Do our own button handling
 		hijack_buttonlist = intercept_all_buttons;
@@ -2900,28 +2904,37 @@ bootg_display (int firsttime)
 		return NEED_REFRESH;
 	}	
 	// Do our own button handling
+	// modified to hijack standard behaviour
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		switch (data.button) {
+		case IR_RIO_CANCEL_PRESSED:
+		case IR_KW_STAR_PRESSED:
 		case IR_TOP_BUTTON_PRESSED:
-			hijack_deactivate(HIJACK_IDLE_PENDING);
+			if (bootg_inmenu==0)
+				bootg_domenu = 1;
+			else
+				hijack_deactivate(HIJACK_IDLE_PENDING);
 			break;
-		case IR_LEFT_BUTTON_PRESSED:
-			bootg_domenu= 1;
-			break;
+		case IR_KW_NEXTTRACK_PRESSED:
+		case IR_RIO_NEXTTRACK_PRESSED:
 		case IR_RIGHT_BUTTON_PRESSED:
-			bootg_dodisplay = 1;
-			break;
 		case IR_KNOB_RIGHT:
 			bootg_move(1);
-			bootg_domenu= 1;
+			bootg_domenu = 1;
 			break;
+		case IR_KW_PREVTRACK_PRESSED:
+		case IR_RIO_PREVTRACK_PRESSED:
+		case IR_LEFT_BUTTON_PRESSED:
 		case IR_KNOB_LEFT:
 			bootg_move(-1);
-			bootg_domenu= 1;
+			bootg_domenu = 1;
 			break;
+		case IR_KW_CD_PRESSED:
+		case IR_RIO_MENU_PRESSED:
+		case IR_BOTTOM_BUTTON_PRESSED:
 		case IR_KNOB_PRESSED:
-			hijack_buttonlist = NULL;
-			ir_selected = 1; // return to main menu
+			bootg_inmenu = 0;
+			bootg_dodisplay = 1;
 			break;
 		}
 	}
