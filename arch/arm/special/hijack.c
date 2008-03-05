@@ -3590,7 +3590,6 @@ showbutton_display (int firsttime)
 
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
-	{"Whack-a-mole",		    wam_display,	NULL,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
@@ -3627,6 +3626,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #endif
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{ volumelock_menu_label,	volumelock_display,	volumelock_move,	0},
+	{"Whack-a-mole",		    wam_display,	NULL,		0},
 	{NULL,				NULL,			NULL,			0},};
 
 static void
