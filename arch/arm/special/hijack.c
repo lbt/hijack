@@ -2994,8 +2994,8 @@ bootg_display (int firsttime)
 
 unsigned short wam_playing = 0;    // game in progress
 int wam_next_mole_time = 0;
-unsigned short wam_loc = 0;        // Where's henry
-unsigned short wam_whack = 0;      // Where did you hit or WAM_NONE
+unsigned short wam_h_loc = 0;        // Where's henry
+unsigned short wam_whack_loc = 0;      // Where did you hit or WAM_NONE
 unsigned short wam_status = 0;     // What happened?
 short wam_score = 0;      // Score
 unsigned short wam_score_counted = 0;     // Score counted?
@@ -3017,6 +3017,7 @@ int wam_time_limit = WAM_TIME_LIMIT_10;
 int wam_misses_left;
 #define WAM_MISSES 10
 
+// used by wam_h_loc and wam_whack_loc
 #define WAM_NONE 0
 #define WAM_UP 1
 #define WAM_DOWN 2
@@ -3037,19 +3038,14 @@ typedef struct glyph_s {
 	const char		 *data;
 } glyph_t;
 
-/* static wam_graphics[] = {
-	{5, 5, {
-		};
-*/
-
 static void
 wam_move (int move)
 {
 	if (wam_score_counted)
 		return;
 
-	wam_whack = move;
-	if (wam_whack == wam_loc) {
+	wam_whack_loc = move;
+	if (wam_whack_loc == wam_h_loc) {
 		printk("HIT\n");
 		wam_status = WAM_HIT;
 	} else {
@@ -3061,8 +3057,8 @@ wam_move (int move)
 static void
 wam_init_game (void) {
 		// setup game state
-		wam_whack = WAM_NONE;
-		wam_loc = WAM_NONE;
+		wam_whack_loc = WAM_NONE;
+		wam_h_loc = WAM_NONE;
 		wam_score=0;
 		wam_misses_left=WAM_MISSES;
 		printk("misses_left : %d\n", wam_misses_left);
@@ -3138,7 +3134,7 @@ wam_display (int firsttime)
 	// A keypress could just have arrived so only do this if there isn't one
 	// or if it's marked 'done'
 	if 	((jiffies_since(wam_molet) >= wam_next_mole_time) &&
-		(wam_whack == WAM_NONE || wam_whack == WAM_DONE))
+		(wam_whack_loc == WAM_NONE || wam_whack_loc == WAM_DONE))
 	{
 		wam_score_counted=0;
 		wam_status = WAM_READY;
@@ -3174,16 +3170,16 @@ wam_display (int firsttime)
 		if (!wam_score_counted){
 			wam_molet = JIFFIES();
 			wam_score_counted=1;
-			wam_whack = WAM_DONE;  // mark whack as 'seen'
+			wam_whack_loc = WAM_DONE;  // mark whack as 'seen'
 			if (wam_status == WAM_MISS) {
-				hijack_beep(60, 100, 30);	// sad beep
+				hijack_beep(60, 100, 50);	// sad beep
 				if (! --wam_misses_left)
 					wam_status = WAM_GAME_OVER;
 				printk("MISS: misses_left : %d\n", wam_misses_left);
 				wam_score-=1;
 				wam_next_mole_time = HZ/2;
 			} else if (wam_status == WAM_HIT) {
-				hijack_beep(200, 100, 30); // happy beep
+				hijack_beep(80, 100, 50); // happy beep
 				wam_next_mole_time = HZ;
 				wam_score+=1;
 				printk("HIT: %d\n", wam_score);
@@ -3214,11 +3210,11 @@ wam_display (int firsttime)
 	// * draw the mole
 
 	// if there was a henry and no attempt then decrement the misses_left
-	if (wam_loc != WAM_NONE && wam_whack==WAM_NONE) {
+	if (wam_h_loc != WAM_NONE && wam_whack_loc==WAM_NONE) {
 		wam_misses_left--;
 		printk("NOGO: misses_left : %d\n", wam_misses_left);
 		// sad_beep()
-		hijack_beep(30, 300, 30);
+		hijack_beep(40, 100, 50);
 		if (wam_misses_left==0)
 			wam_status = WAM_GAME_OVER;
 	}
@@ -3226,7 +3222,7 @@ wam_display (int firsttime)
 	printk("\nNew mole\n");
 	clear_hijack_displaybuf(COLOR0);
 
-	if (wam_loc == WAM_NONE) { // maybe draw a henry?
+	if (wam_h_loc == WAM_NONE) { // maybe draw a henry?
 		unsigned char rand_b ;         // place to put a random byte
 		get_random_bytes(&rand_b,1);
 		wam_next_mole_time = rand_b % wam_time_limit;
@@ -3234,8 +3230,8 @@ wam_display (int firsttime)
 		printk("next_mole due : %d\n",wam_next_mole_time);
 
 		get_random_bytes(&rand_b,1);
-		wam_loc = (int)(rand_b % wam_henry_freq) + 1;
-		switch (wam_loc) {
+		wam_h_loc = (int)(rand_b % wam_henry_freq) + 1;
+		switch (wam_h_loc) {
 		case WAM_UP    : col=56;  row=0;
 			break;
 		case WAM_DOWN  : col=56;  row=24;
@@ -3245,17 +3241,17 @@ wam_display (int firsttime)
 		case WAM_RIGHT : col=104; row=8;
 			break;
 		default :
-			wam_loc=WAM_NONE;
+			wam_h_loc=WAM_NONE;
 			break;
 		}		
-		if (wam_loc != WAM_NONE) { // Do we have a henry?
+		if (wam_h_loc != WAM_NONE) { // Do we have a henry?
 			printk("Mole up\n");
 			draw_char(row, col, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
 			draw_char(row, col+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
 		}
 	} else { // force a delay after showing a henry
 		wam_next_mole_time = WAM_MIN_TIME*2;		
-		wam_loc=WAM_NONE;
+		wam_h_loc=WAM_NONE;
 	}	
 
 	// Draw remaining time
@@ -3269,7 +3265,7 @@ wam_display (int firsttime)
 		}
 	}
 	wam_molet = JIFFIES();
-	wam_whack = WAM_NONE; // mark start of new attempt
+	wam_whack_loc = WAM_NONE; // mark start of new attempt
 	return NEED_REFRESH;
 }
 
