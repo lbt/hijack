@@ -3214,7 +3214,7 @@ wam_display (int firsttime)
 		wam_misses_left--;
 		printk("NOGO: misses_left : %d\n", wam_misses_left);
 		// sad_beep()
-		hijack_beep(40, 100, 50);
+		hijack_beep(48, 100, 50);
 		if (wam_misses_left==0)
 			wam_status = WAM_GAME_OVER;
 	}
