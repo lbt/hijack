@@ -2992,6 +2992,8 @@ bootg_display (int firsttime)
 
 // Tested by Denise...
 
+#define  wam_printk(...) 
+// #define  wam_printk(...) printk(__VA_ARGS__)
 unsigned short wam_playing = 0;    // game in progress
 int wam_next_mole_time = 0;
 unsigned short wam_h_loc = 0;        // Where's henry
@@ -3046,10 +3048,10 @@ wam_move (int move)
 
 	wam_whack_loc = move;
 	if (wam_whack_loc == wam_h_loc) {
-		printk("HIT\n");
+		wam_printk("HIT\n");
 		wam_status = WAM_HIT;
 	} else {
-		printk("MISS\n");
+		wam_printk("MISS\n");
 		wam_status = WAM_MISS;
 	}
 }
@@ -3061,7 +3063,7 @@ wam_init_game (void) {
 		wam_h_loc = WAM_NONE;
 		wam_score=0;
 		wam_misses_left=WAM_MISSES;
-		printk("misses_left : %d\n", wam_misses_left);
+		wam_printk("misses_left : %d\n", wam_misses_left);
 }
 
 static int
@@ -3098,7 +3100,7 @@ wam_display (int firsttime)
 	
 	// Do our own button handling
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
-		printk("KEY\n");
+		wam_printk("KEY\n");
 		switch (data.button) {
 		case IR_TOP_BUTTON_PRESSED:
 			wam_move(WAM_UP); break;
@@ -3138,7 +3140,7 @@ wam_display (int firsttime)
 	{
 		wam_score_counted=0;
 		wam_status = WAM_READY;
-		printk("READY\n");
+		wam_printk("READY\n");
 	}
 
 	// if it's a hit/miss then flash up the message and change the score
@@ -3175,14 +3177,14 @@ wam_display (int firsttime)
 				hijack_beep(60, 100, 50);	// sad beep
 				if (! --wam_misses_left)
 					wam_status = WAM_GAME_OVER;
-				printk("MISS: misses_left : %d\n", wam_misses_left);
+				wam_printk("MISS: misses_left : %d\n", wam_misses_left);
 				wam_score-=1;
 				wam_next_mole_time = HZ/2;
 			} else if (wam_status == WAM_HIT) {
 				hijack_beep(80, 100, 50); // happy beep
 				wam_next_mole_time = HZ;
 				wam_score+=1;
-				printk("HIT: %d\n", wam_score);
+				wam_printk("HIT: %d\n", wam_score);
 			}
 			switch (wam_score / 10) {				
 			case 0: wam_time_limit = WAM_TIME_LIMIT_10; break;
@@ -3212,14 +3214,14 @@ wam_display (int firsttime)
 	// if there was a henry and no attempt then decrement the misses_left
 	if (wam_h_loc != WAM_NONE && wam_whack_loc==WAM_NONE) {
 		wam_misses_left--;
-		printk("NOGO: misses_left : %d\n", wam_misses_left);
+		wam_printk("NOGO: misses_left : %d\n", wam_misses_left);
 		// sad_beep()
 		hijack_beep(48, 100, 50);
 		if (wam_misses_left==0)
 			wam_status = WAM_GAME_OVER;
 	}
 	
-	printk("\nNew mole\n");
+	wam_printk("\nNew mole\n");
 	clear_hijack_displaybuf(COLOR0);
 
 	if (wam_h_loc == WAM_NONE) { // maybe draw a henry?
@@ -3227,7 +3229,7 @@ wam_display (int firsttime)
 		get_random_bytes(&rand_b,1);
 		wam_next_mole_time = rand_b % wam_time_limit;
 		wam_next_mole_time += WAM_MIN_TIME;
-		printk("next_mole due : %d\n",wam_next_mole_time);
+		wam_printk("next_mole due : %d\n",wam_next_mole_time);
 
 		get_random_bytes(&rand_b,1);
 		wam_h_loc = (int)(rand_b % wam_henry_freq) + 1;
@@ -3245,7 +3247,7 @@ wam_display (int firsttime)
 			break;
 		}		
 		if (wam_h_loc != WAM_NONE) { // Do we have a henry?
-			printk("Mole up\n");
+			wam_printk("Mole up\n");
 			draw_char(row, col, HENRY_LEFTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
 			draw_char(row, col+6, HENRY_RIGHTC, (COLOR3<<4)|COLOR3, (COLOR0<<4)|COLOR0);
 		}
